@@ -15,7 +15,7 @@ pub struct Job {
     pub payload: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pub attempts: i64,
-    pub max_attempts: i64,
+    pub attempts: i32,
+    pub max_attempts: i32,
     pub error: Option<String>,
 }

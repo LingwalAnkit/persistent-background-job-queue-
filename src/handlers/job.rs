@@ -1,9 +1,7 @@
-use std::path;
-
 use axum::{
     Json,
     extract::{Path, State},
-    http::{self, StatusCode},
+    http::StatusCode,
 };
 
 use sqlx::PgPool;
@@ -18,11 +16,11 @@ pub async fn create_job(
 ) -> Result<Json<Job>, StatusCode> {
     let job = sqlx::query_as::<_, Job>(
         r#"
-            INSERT INTO jobs (job_type, payload, created_at, updated_at, attempts, max_attempts, error)
+            INSERT INTO jobs (job_type, payload)
             VALUES ($1, $2)
             RETURNING id, job_type, payload, created_at, updated_at, attempts, max_attempts, error
-        "#
-    )
+        "#,
+    ) // VALUES ($1, $2) placeholder
     .bind(&req.job_type)
     .bind(&req.payload)
     .fetch_one(&pool)
@@ -30,6 +28,10 @@ pub async fn create_job(
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(job))
 }
+
+//"Run this SQL query, and take the row(s) returned by PostgreSQL and convert them into my Rust Job struct."
+// jobs is the table name
+// fetch_one = "I expect a row. Give me one row."
 
 pub async fn get_job(
     State(pool): State<PgPool>,
@@ -49,3 +51,5 @@ pub async fn get_job(
 
     job.map(Json).ok_or(StatusCode::NOT_FOUND)
 }
+
+// fetch_optional = "I expect zero or one row. Give me one row if it exists."
