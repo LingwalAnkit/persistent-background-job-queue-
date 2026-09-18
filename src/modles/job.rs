@@ -18,4 +18,5 @@ pub struct Job {
     pub attempts: i32,
     pub max_attempts: i32,
     pub error: Option<String>,
+    pub status: String,
 }

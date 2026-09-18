@@ -18,7 +18,7 @@ pub async fn create_job(
         r#"
             INSERT INTO jobs (job_type, payload)
             VALUES ($1, $2)
-            RETURNING id, job_type, payload, created_at, updated_at, attempts, max_attempts, error
+            RETURNING id, job_type, payload, status, created_at, updated_at, attempts, max_attempts, error
         "#,
     ) // VALUES ($1, $2) placeholder
     .bind(&req.job_type)
