@@ -16,13 +16,14 @@ pub async fn create_job(
 ) -> Result<Json<Job>, StatusCode> {
     let job = sqlx::query_as::<_, Job>(
         r#"
-            INSERT INTO jobs (job_type, payload)
-            VALUES ($1, $2)
-            RETURNING id, job_type, payload, status, created_at, updated_at, attempts, max_attempts, error
+            INSERT INTO jobs (job_type, payload, max_attempts)
+            VALUES ($1, $2, COALESCE($3, 3))
+            RETURNING id, job_type, payload, status, attempts, max_attempts, error, run_at, created_at, updated_at
         "#,
     ) // VALUES ($1, $2) placeholder
     .bind(&req.job_type)
     .bind(&req.payload)
+    .bind(&req.max_attempts)
     .fetch_one(&pool)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -39,9 +40,9 @@ pub async fn get_job(
 ) -> Result<Json<Job>, StatusCode> {
     let job = sqlx::query_as::<_, Job>(
         r#"
-        SELECT id, job_type, payload, status, attempts, max_attempts, error, created_at, updated_at
-        FROM jobs
-        WHERE id = $1
+            SELECT id, job_type, payload, status, attempts, max_attempts, error, run_at, created_at, updated_at
+            FROM jobs
+            WHERE id = $1
         "#,
     )
     .bind(id)

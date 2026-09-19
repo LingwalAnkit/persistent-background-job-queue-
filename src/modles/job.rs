@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub struct CreateJobRequest {
     pub job_type: String,
     pub payload: serde_json::Value,
+    pub max_attempts: Option<i32>,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -19,4 +20,5 @@ pub struct Job {
     pub max_attempts: i32,
     pub error: Option<String>,
     pub status: String,
+    pub run_at: DateTime<Utc>,
 }
