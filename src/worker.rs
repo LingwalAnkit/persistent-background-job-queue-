@@ -1,21 +1,33 @@
-use crate::executor::execute_job;
 use sqlx::PgPool;
 use std::time::Duration;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::executor::execute_job;
 use crate::modles::Job;
 
-pub async fn start_worker(pool: PgPool, num_workers: usize) {
-    for worker_id in 0..num_workers {
-        let pool = pool.clone(); // You clone the PgPool handle so each async task can own a copy.
-        tokio::spawn(async move {
-            worker_loop(worker_id, pool).await;
-        }); // This creates an independent asynchronous task.
-    }
+pub fn start_workers(
+    pool: PgPool,
+    num_workers: usize,
+    token: CancellationToken,
+) -> Vec<JoinHandle<()>> {
+    (0..num_workers)
+        .map(|worker_id| {
+            let pool = pool.clone();
+            let token = token.clone();
+            tokio::spawn(async move { worker_loop(worker_id, pool, token).await })
+        })
+        .collect()
 }
 
-async fn worker_loop(worker_id: usize, pool: PgPool) {
+async fn worker_loop(worker_id: usize, pool: PgPool, token: CancellationToken) {
     loop {
+        if token.is_cancelled() {
+            println!("[worker {}] shutting down", worker_id);
+            break;
+        }
+
         match claim_next_job(&pool).await {
             Ok(Some(job)) => {
                 println!(
@@ -46,13 +58,23 @@ async fn worker_loop(worker_id: usize, pool: PgPool) {
                         ),
                     },
                 }
+                // loop back around immediately — a job just finished, check for cancellation next
             }
             Ok(None) => {
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    _ = token.cancelled() => {
+                        println!("[worker {}] shutting down", worker_id);
+                        break;
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("[worker {}] error claiming job: {}", worker_id, e);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    _ = token.cancelled() => break,
+                }
             }
         }
     }
@@ -65,8 +87,8 @@ async fn claim_next_job(pool: &PgPool) -> Result<Option<Job>, sqlx::Error> {
         SET status = 'running', attempts = attempts + 1, updated_at = now()
         WHERE id = (
             SELECT id FROM jobs
-            WHERE status = 'pending'
-            ORDER BY created_at
+            WHERE status = 'pending' AND run_at <= now()
+            ORDER BY run_at
             FOR UPDATE SKIP LOCKED
             LIMIT 1
         )
@@ -90,7 +112,7 @@ async fn handle_failure(pool: &PgPool, job: &Job, error: &str) -> Result<bool, s
         mark_failed(pool, job.id, error).await?;
         Ok(false)
     } else {
-        let backoff_secs = 2i64.pow(job.attempts as u32).min(300); // cap at 5 min
+        let backoff_secs = 2i64.pow(job.attempts as u32).min(300);
         retry_later(pool, job.id, error, backoff_secs).await?;
         Ok(true)
     }
@@ -113,10 +135,10 @@ async fn retry_later(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
-            UPDATE jobs
-            SET status = 'pending', error = $1, run_at = now() + ($2 || ' seconds')::interval, updated_at = now()
-            WHERE id = $3
-            "#,
+        UPDATE jobs
+        SET status = 'pending', error = $1, run_at = now() + ($2 || ' seconds')::interval, updated_at = now()
+        WHERE id = $3
+        "#,
     )
     .bind(error)
     .bind(backoff_secs.to_string())
