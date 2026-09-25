@@ -2,10 +2,12 @@ use sqlx::PgPool;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::executor::execute_job;
 use crate::modles::Job;
+use crate::worker;
 
 pub fn start_workers(
     pool: PgPool,
@@ -24,38 +26,38 @@ pub fn start_workers(
 async fn worker_loop(worker_id: usize, pool: PgPool, token: CancellationToken) {
     loop {
         if token.is_cancelled() {
-            println!("[worker {}] shutting down", worker_id);
+            info!(worker_id, "shutting down");
             break;
         }
 
         match claim_next_job(&pool).await {
             Ok(Some(job)) => {
-                println!(
-                    "[worker {}] claimed job {} ({}), attempt {}/{}",
-                    worker_id, job.id, job.job_type, job.attempts, job.max_attempts
+                info!(
+                    worker_id,
+                    job_id = %job.id,
+                    job_type = %job.job_type,
+                    attempt = job.attempts,
+                    max_attempts = job.max_attempts,
+                    "claimed job"
                 );
 
                 match execute_job(&job).await {
                     Ok(()) => match mark_succeeded(&pool, job.id).await {
-                        Ok(_) => println!("[worker {}] job {} succeeded", worker_id, job.id),
-                        Err(e) => eprintln!(
-                            "[worker {}] failed to save success for {}: {}",
-                            worker_id, job.id, e
-                        ),
+                        Ok(_) => info!(worker_id, job_id = %job.id, "job succeeded"),
+                        Err(e) => {
+                            error!(worker_id , job_id = %job.id , error = %e , "failed to save success")
+                        }
                     },
                     Err(err_msg) => match handle_failure(&pool, &job, &err_msg).await {
-                        Ok(true) => println!(
-                            "[worker {}] job {} failed, will retry: {}",
-                            worker_id, job.id, err_msg
-                        ),
-                        Ok(false) => println!(
-                            "[worker {}] job {} permanently failed: {}",
-                            worker_id, job.id, err_msg
-                        ),
-                        Err(e) => eprintln!(
-                            "[worker {}] failed to save failure for {}: {}",
-                            worker_id, job.id, e
-                        ),
+                        Ok(true) => {
+                            warn!(worker_id, job_id = %job.id, error = %err_msg, "job failed, will retry")
+                        }
+                        Ok(false) => {
+                            error!(worker_id, job_id = %job.id, error = %err_msg, "job permanently failed")
+                        }
+                        Err(e) => {
+                            error!(worker_id, job_id = %job.id, error = %e, "failed to save failure")
+                        }
                     },
                 }
                 // loop back around immediately — a job just finished, check for cancellation next
@@ -64,13 +66,13 @@ async fn worker_loop(worker_id: usize, pool: PgPool, token: CancellationToken) {
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(1)) => {}
                     _ = token.cancelled() => {
-                        println!("[worker {}] shutting down", worker_id);
+                        info!(worker_id, "shutting down");
                         break;
                     }
                 }
             }
             Err(e) => {
-                eprintln!("[worker {}] error claiming job: {}", worker_id, e);
+                error!(worker_id, error = %e, "error claiming job");
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(1)) => {}
                     _ = token.cancelled() => break,
